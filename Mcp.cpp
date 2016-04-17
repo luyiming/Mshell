@@ -12,6 +12,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <climits>
+#include <cerrno>
 
 using namespace std;
 
@@ -62,12 +63,21 @@ void save(DIR* pDir, string srcPath, string destPath)
                 ofstream fout((destPath + fileName).c_str(), ios::binary);
                 if(!fin)
                 {
-                    cerr << "打开文件:" << (srcPath + fileName) << " 失败" << endl;
+                    if(errno == 13)
+                        cerr << "权限不够,无法打开文件: \"" << srcPath + fileName << endl;
+                    else
+                        cerr << "无法打开文件:" << (srcPath + fileName) << "\"" << endl;
                     return;
                 }
                 if(!fout)
                 {
-                    cerr << "创建文件失败" << (destPath + fileName) << endl;
+                    if(errno == 13)
+                        cerr << "cp: 无法创建普通文件\"" << (destPath + fileName) << "\": 权限不够" << endl;
+                    else
+                    {
+                        cerr << "创建文件失败" << (destPath + fileName) << endl;
+                        cerr << strerror(errno) << endl;
+                    }
                     return;
                 }
                 char buffer[512];
@@ -213,12 +223,18 @@ void CopyProcess::run()
             ofstream fout(destPathName.c_str(), ios::binary);
             if(!fin)
             {
-                cerr << "打开文件:" << src[i] << " 失败" << endl;
+                if(errno == 13)
+                    cerr << "权限不够，无法打开文件:\"" << src[i] << "\"" << endl;
+                else
+                    cerr << "打开文件:" << src[i] << " 失败" << endl;
                 return;
             }
             if(!fout)
             {
-                cerr << "创建文件失败" << endl;
+                if(errno == 13)
+                    cerr << "cp: 无法创建普通文件\"" << destPathName << "\": 权限不够" << endl;
+                else
+                    cerr << "创建文件失败" << endl;
                 return;
             }
             char buffer[512];

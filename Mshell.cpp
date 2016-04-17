@@ -4,6 +4,8 @@
 #include <string>
 #include <cstdio>
 #include <sstream>
+#include <fstream>
+#include <vector>
 #include <cstring>
 #include <sys/wait.h>
 #include <readline/readline.h>
@@ -11,6 +13,9 @@
 #include <cstdlib>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <cerrno>
+#include <signal.h>
+#include <ncurses.h>
 
 using namespace std;
 
@@ -20,6 +25,7 @@ struct Job;
 int handleInput(Process commands[]);
 void set_term_color();
 void reset_term_color();
+void man(char *args[]);
 
 enum FLAGS{APPEND, TRUNC, NONE};
 struct Process
@@ -60,6 +66,7 @@ int main()
     getcwd(pwd, 1024);
     while(1)
     {
+        set_term_color();
         Process commands[100];
         int num = handleInput(commands);
         /*
@@ -166,9 +173,35 @@ int main()
                         commands[i].args[0] = name;
                         execv("/home/magnolias/Github/Mshell/bin/Mcp", commands[i].args);
                     }
+                    else if(strcmp(commands[i].args[0], "cmp") == 0)
+                    {
+                        char *name = new char[5];
+                        strcpy(name, "Mcmp");
+                        delete commands[i].args[0];
+                        commands[i].args[0] = name;
+                        execv("/home/magnolias/Github/Mshell/bin/Mcmp", commands[i].args);
+                    }
+                    else if(strcmp(commands[i].args[0], "cat") == 0)
+                    {
+                        char *name = new char[5];
+                        strcpy(name, "Mcat");
+                        delete commands[i].args[0];
+                        commands[i].args[0] = name;
+                        execv("/home/magnolias/Github/Mshell/bin/Mcat", commands[i].args);
+                    }
+                    else if(strcmp(commands[i].args[0], "man") == 0)
+                    {
+                        man(commands[i].args);
+                    }
                     else
                     {
-                        execvp(commands[i].args[0], commands[i].args);
+                        if(execvp(commands[i].args[0], commands[i].args) == -1)
+                        {
+                            pid = getpid();
+                            cerr << strerror(errno) << endl;
+                            if(errno == 2)
+                                kill(pid, SIGINT);
+                        }
                     }
                 }
                 else
@@ -339,6 +372,65 @@ int handleInput(Process *commands)
     return index + 1;
 }
 
+void man(char *args[])
+{
+    string manPath = "/home/magnolias/Github/Mshell/man/";
+    manPath += args[1];
+    manPath += ".man";
+    vector<string> text;
+    ifstream fin(manPath.c_str());
+    if(!fin)
+    {
+        cerr << "open file error" << endl;
+        pid_t pid = getpid();
+        kill(pid, SIGINT);
+        return;
+    }
+    string temp;
+    while(getline(fin, temp))
+        text.push_back(temp);
+    fin.close();
+    int ch, row, col;
+    int y = 0, x = 0;
+    initscr();				/* Start curses mode */
+    cbreak();
+    clear();
+    noecho();
+    keypad(stdscr, true);
+    start_color();
+    init_pair(1, COLOR_YELLOW, COLOR_BLACK);
+    init_pair(3, COLOR_GREEN, COLOR_BLACK);
+    getmaxyx(stdscr, row, col);		/* find the boundaries of the screeen */
+    int startPos = 0;
+    while(1)	/* read the file till we reach the end */
+    {
+        clear();
+        move(0, 0);			/* start at the beginning of the screen */
+        attron(COLOR_PAIR(1));
+        for(int i = 0; i < row - 1; i++)
+            printw("%s\n", text[startPos + i].c_str());
+        attroff(COLOR_PAIR(1));
+        attron(A_STANDOUT | COLOR_PAIR(3));			/* cut bold on */
+        printw("Manual page %s line %d (press q to quit)", args[1], startPos + 1);
+        attroff(A_STANDOUT | COLOR_PAIR(3));			/* cut bold on */
+        refresh();
+        ch = getch();
+        switch(ch)
+        {
+            case KEY_UP:
+                startPos = (startPos - 1 >= 0 ? startPos - 1 : 0); break;
+            case KEY_DOWN:
+                startPos = (startPos + 1 < text.size() - row ? startPos + 1 : text.size() - row - 1); break;
+            case 'q':
+                endwin();
+                pid_t pid = getpid();
+                kill(pid, SIGINT);
+                return;
+        }
+    }
+    endwin();                       	/* End curses mode */
+    return;
+}
 int launchProcess(Process subprocess)
 {
 }
