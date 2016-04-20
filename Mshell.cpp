@@ -20,15 +20,18 @@
 
 using namespace std;
 
-const int maxn = 100;
+//source file path, to locate subprocess.
+//change it to your path
+string srcPath = "/home/magnolias/Github/Mshell/";
+
 struct Process
 {
     Process *next = NULL;       /* next process in pipeline */
     Process *prev = NULL;
     vector<string> args;
     pid_t pid = 0;                  /* process ID */
-    char completed = 0;             /* true if process has completed */
-    char stopped = 0;               /* true if process has stopped */
+    bool completed = false;             /* true if process has completed */
+    bool stopped = false;               /* true if process has stopped */
     int status = 0;                 /* reported status value */
     string infile;
     string outfile;
@@ -45,9 +48,9 @@ struct Job
     Job *next = NULL;           /* next active job */
     Job *prev = NULL;
     string command;
-    Process *process_head = NULL;     /* list of processes in this job */
+    Process *process_head = NULL;   /* list of processes in this job */
     pid_t pgid = 0;                 /* process group ID */
-    char notified = 0;              /* true if user told about stopped job */
+    bool notified = false;          /* true if user told about stopped job */
     struct termios tmodes;      /* saved terminal modes */
     ~Job()
     {
@@ -135,6 +138,8 @@ void init_shell()
 
 int Process::exec()
 {
+    fprintf(stdout, "\033[0m");  
+    fflush(stdout); 
     char* argv[100];
     int index = 0;
     for (vector<string>::size_type i = 0; i < args.size(); i++)
@@ -151,7 +156,7 @@ int Process::exec()
         char* t = new char[args[0].size() + 1];
         strcpy(t, args[0].c_str());
         argv[0] = t;
-        execv((string("/home/magnolias/Mshell/bin/") + args[0]).c_str(), argv);
+        execv((srcPath + "bin/" + args[0]).c_str(), argv);
         perror("launch process error : ");
         exit(1);
     }
@@ -182,7 +187,7 @@ int main()
         Job* j = handleInput();
         if(j == NULL)
         {
-            cerr << "输入错误" << endl;
+            //cerr << "输入错误" << endl;
             continue;
         }
         if(built_in_func(j))
@@ -230,7 +235,6 @@ bool built_in_func(Job* j)
 Job* handleInput()
 {
 	char shell_prompt[100];
-    // Configure readline to auto-complete paths when the tab key is hit.
     rl_bind_key('\t', rl_complete);
     snprintf(shell_prompt, sizeof(shell_prompt), "%s:%s $ ", getenv("USER"), getcwd(NULL, 1024));
     char* cmd = NULL;
@@ -380,9 +384,9 @@ Job* handleInput()
 
 void man(char *args[])
 {
-    string manPath = "/home/magnolias/Github/Mshell/man/";
+    string manPath = srcPath + "man/";
     manPath += args[1];
-    manPath += ".man";
+    manPath += ".txt";
     vector<string> text;
     ifstream fin(manPath.c_str());
     if(!fin)
@@ -579,7 +583,7 @@ void launch_job(Job *j, int foreground)
         infile = pipefd[0];
     }
 
-    format_job_info(j, "launched");
+    //format_job_info(j, "launched");
 
     if(!shell_is_interactive)
         wait_for_job(j);
@@ -706,7 +710,7 @@ void do_job_notification (void)
     {
         if (job_is_completed(j))
         {
-            format_job_info(j, "completed");
+//            format_job_info(j, "completed");
             if (j == job_head)
             {
                 job_head = job_head->next;

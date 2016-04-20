@@ -175,17 +175,24 @@ void CopyProcess::run()
 
                 DIR* srcDir = opendir(src[i].c_str());
                 DIR* destDir = NULL;
+                bool destExist = true;
                 if((destDir = opendir(dest.c_str())) == NULL)
+                {
                     mkdir(dest.c_str(), 0775);
-                if((destDir = opendir((dest + "/" + fileName).c_str())) == NULL)
-                    mkdir((dest + "/" + fileName).c_str(), 0775);
+                    destExist = false;
+                }
+                if(destExist)
+                    if((destDir = opendir((dest + "/" + fileName).c_str())) == NULL)
+                        mkdir((dest + "/" + fileName).c_str(), 0775);
                 if(NULL == srcDir)
                 {
                     cerr << "打开目录\"" << src[i] << "\" 失败" << endl;
                     return;
                 }
-
-                save(srcDir, src[i] + "/", dest + "/" + fileName +  "/");
+                if(destExist)
+                    save(srcDir, src[i] + "/", dest + "/" + fileName +  "/");
+                else
+                    save(srcDir, src[i] + "/", dest + "/");
                 closedir(srcDir);
             }
         }
