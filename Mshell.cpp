@@ -6,6 +6,7 @@
 #include <sstream>
 #include <fstream>
 #include <vector>
+#include <queue>
 #include <cstring>
 #include <sys/wait.h>
 #include <readline/readline.h>
@@ -47,10 +48,12 @@ struct Job
 {
     Job *next = NULL;           /* next active job */
     Job *prev = NULL;
+    int foreground = 1;
     string command;
     Process *process_head = NULL;   /* list of processes in this job */
     pid_t pgid = 0;                 /* process group ID */
     bool notified = false;          /* true if user told about stopped job */
+    bool fgnotified = false;          /* true if user told about stopped job */
     struct termios tmodes;      /* saved terminal modes */
     ~Job()
     {
@@ -69,7 +72,7 @@ struct Job
 };
 
 
-Job* handleInput();
+Job* handleInput(char *file = NULL);
 void set_term_color();
 void reset_term_color();
 void man(char *args[]);
@@ -138,8 +141,6 @@ void init_shell()
 
 int Process::exec()
 {
-    fprintf(stdout, "\033[0m");  
-    fflush(stdout); 
     char* argv[100];
     int index = 0;
     for (vector<string>::size_type i = 0; i < args.size(); i++)
@@ -174,17 +175,29 @@ int Process::exec()
 }
 
 
-
 Job *job_head = NULL;
 Job *job_tail = NULL;
-
+Job *job_cur = NULL;
+Job *job_next = NULL;
+queue<string> file;
 int main()
 {
     init_shell();
     while(1)
     {
+        do_job_notification();
         set_term_color();
-        Job* j = handleInput();
+        Job* j = NULL;
+        if(!file.empty())
+        {
+            char* t = (char*)malloc(file.front().size() * sizeof(char));
+            strcpy(t, file.front().c_str());
+            j = handleInput(t);
+            file.pop();
+        }
+        else
+            j = handleInput();
+        reset_term_color();
         if(j == NULL)
         {
             //cerr << "输入错误" << endl;
@@ -201,8 +214,20 @@ int main()
         }
         job_tail = j;
 
-        launch_job(job_tail, 1);
-        do_job_notification();
+        if(j->foreground)
+            launch_job(job_tail, 1);
+        else
+        {
+            launch_job(job_tail, 0);
+            if(job_cur == NULL)
+                job_cur = job_tail;
+            else
+            {
+                job_next = job_cur;
+                job_cur = job_tail;
+            }
+        }
+
     }
 }
 bool built_in_func(Job* j)
@@ -229,21 +254,159 @@ bool built_in_func(Job* j)
             perror("cd error : ");
         return true;
     }
+    else if(j->process_head->args[0] == "jobs")
+    {
+        bool show_pgid = false;
+        if(j->process_head->args.size() > 1)
+        {
+            if(j->process_head->args[1] == "-l")
+                show_pgid = true;
+        }
+        bool update = false;
+        int index = 1;
+        for(Job *job = job_head; job != NULL; job = job->next)
+        {
+            if(!job->foreground)
+            {
+                if(job == job_cur)
+                    printf("[%d]+ ", index++);
+                else if(job == job_next)
+                    printf("[%d]- ", index++);
+                else
+                    printf("[%d]  ", index++);
+                if(show_pgid)
+                    cout << job->pgid << " ";
+                if(job_is_completed(job))
+                {
+                    cout << "已完成\t\t" << job->command << endl;
+                    update = true;
+                }
+                else if(job_is_stopped(job))
+                {
+                    cout << "已停止\t\t" << job->command << endl;
+                }
+                else
+                    cout << "运行中\t\t" << job->command << endl;
+            }
+        }
+        if(update)
+        {
+            job_cur = job_next;
+            if(job_next != NULL)
+                job_next = job_next->prev;
+        }
+        return true;
+    }
+    else if(j->process_head->args[0] == "fg" || j->process_head->args[0] == "bg")
+    {
+        int cnt = 0;
+        if(j->process_head->args.size() > 1)
+        {
+            cnt = atoi(j->process_head->args[1].c_str() + 1);
+        }
+        if(cnt == 0)
+        {
+            if(j->process_head->args[0] == "fg")
+            {
+                if(job_cur == NULL)
+                {
+                    cerr << "Msh: fg: 当前: 无此任务" << endl;
+                    return true;
+                }
+                continue_job(job_cur, 1);
+                job_cur = job_next;
+                if(job_next != NULL)
+                    job_next = job_next->prev;
+            }
+            else
+            {
+                if(job_cur == NULL)
+                {
+                    cerr << "Msh: bg: 当前: 无此任务" << endl;
+                    return true;
+                }
+                continue_job(job_cur, 0);
+            }
+        }
+        else
+        {
+            int index = 1;
+            Job *job = NULL;
+            for(job = job_head; job != NULL; job = job->next)
+            {
+                if(!job->foreground)
+                {
+                    if(index == cnt)
+                        break;
+                    index++;
+                }
+            }
+            if(index == cnt)
+            {
+                if(j->process_head->args[0] == "fg")
+                {
+                    continue_job(job, 1);
+                    job_cur = job_next;
+                    if(job_next != NULL)
+                        job_next = job_next->prev;
+                }
+                else
+                    continue_job(job_cur, 0);
+            }
+            else
+            {
+                if(j->process_head->args[0] == "fg")
+                    cerr << "Msh: fg: "
+                         << j->process_head->args[1]
+                         << ": 无此任务" << endl;
+                else
+                    cerr << "Msh: bg: "
+                         << j->process_head->args[1]
+                         << ": 无此任务" << endl;
+            }
+        }
+        return true;
+    }
+    else
+    {
+        ifstream fin(j->process_head->args[0]);
+        if(fin)
+        {
+            while(fin)
+            {
+                string s;
+                getline(fin, s);
+                file.push(s);
+            }
+            return true;
+        }
+        else
+            return false;
+    }
     return false;
 }
 
-Job* handleInput()
+Job* handleInput(char *file)
 {
-	char shell_prompt[100];
-    rl_bind_key('\t', rl_complete);
-    snprintf(shell_prompt, sizeof(shell_prompt), "%s:%s $ ", getenv("USER"), getcwd(NULL, 1024));
     char* cmd = NULL;
-    cmd = readline(shell_prompt);
-    if(cmd == NULL)
+    if(file == NULL)
     {
-        cerr << "没有得到命令" << endl;
-        return NULL;
+        char shell_prompt[100];
+        rl_bind_key('\t', rl_complete);
+        snprintf(shell_prompt, sizeof(shell_prompt), "%s:%s $ ", getenv("USER"), getcwd(NULL, 1024));
+        cmd = readline(shell_prompt);
+        if(cmd == NULL)
+        {
+            cerr << "没有得到命令" << endl;
+            return NULL;
+        }
     }
+	else
+    {
+        fprintf(stderr, "%s:%s $ %s\n", getenv("USER"), getcwd(NULL, 1024), file);
+        cmd = file;
+    }
+
     bool isEmpty = true;
     for(int i = 0; cmd[i] != '\0'; i++)
         if(!isspace(cmd[i]))
@@ -257,8 +420,7 @@ Job* handleInput()
     job->process_head = new Process;
     job->command = string(cmd);
     Process *process_tail = job->process_head;
-    
-    
+
     int j = 0, i = 0;
     while(cmd[i] != '\0')
     {
@@ -266,6 +428,11 @@ Job* handleInput()
         {
             i++;
             continue;
+        }
+        else if(cmd[i] == '&')
+        {
+            job->foreground = 0;
+            i++;
         }
         else if(cmd[i] == '<')
         {
@@ -278,7 +445,7 @@ Job* handleInput()
             {
                 bool hasGotFile = false;
                 process_tail->infile.clear();
-                for(j = i + 2; cmd[j] != '\0' && cmd[j] != '<' && cmd[j] != '>' && cmd[j] != '|'; ++j)
+                for(j = i + 2; cmd[j] != '\0' && cmd[j] != '<' && cmd[j] != '>' && cmd[j] != '|' && cmd[j] != '&'; ++j)
                 {
                     if(isspace(cmd[j]) && hasGotFile)
                         break;
@@ -294,7 +461,7 @@ Job* handleInput()
             {
                 bool hasGotFile = false;
                 process_tail->infile.clear();
-                for(j = i + 1; cmd[j] != '\0' && cmd[j] != '<' && cmd[j] != '>' && cmd[j] != '|'; ++j)
+                for(j = i + 1; cmd[j] != '\0' && cmd[j] != '<' && cmd[j] != '>' && cmd[j] != '|' && cmd[j] != '&'; ++j)
                 {
                     if(isspace(cmd[j]) && hasGotFile)
                         break;
@@ -318,7 +485,7 @@ Job* handleInput()
             {
                 bool hasGotFile = false;
                 process_tail->outfile.clear();
-                for(j = i + 2; cmd[j] != '\0' && cmd[j] != '<' && cmd[j] != '>' && cmd[j] != '|'; ++j)
+                for(j = i + 2; cmd[j] != '\0' && cmd[j] != '<' && cmd[j] != '>' && cmd[j] != '|' && cmd[j] != '&'; ++j)
                 {
                     if(isspace(cmd[j]) && hasGotFile)
                         break;
@@ -335,7 +502,7 @@ Job* handleInput()
             {
                 bool hasGotFile = false;
                 process_tail->outfile.clear();
-                for(j = i + 1; cmd[j] != '\0' && cmd[j] != '<' && cmd[j] != '>' && cmd[j] != '|'; ++j)
+                for(j = i + 1; cmd[j] != '\0' && cmd[j] != '<' && cmd[j] != '>' && cmd[j] != '|' && cmd[j] != '&'; ++j)
                 {
                     if(isspace(cmd[j]) && hasGotFile)
                         break;
@@ -349,10 +516,10 @@ Job* handleInput()
                 continue;
             }
         }
-        else if(cmd[i] == '-') 
+        else if(cmd[i] == '-')
         {
             string arg;
-            for(j = i; cmd[j] != '\0' && cmd[j] != '<' && cmd[j] != '>' && cmd[j] != '|' && !isspace(cmd[j]); ++j)
+            for(j = i; cmd[j] != '\0' && cmd[j] != '<' && cmd[j] != '>' && cmd[j] != '|' && !isspace(cmd[j]) && cmd[j] != '&'; ++j)
                 arg += cmd[j];
             process_tail->args.push_back(arg);
             i = j;
@@ -369,7 +536,7 @@ Job* handleInput()
         else
         {
             string arg;
-            for(j = i; cmd[j] != '\0' && cmd[j] != '<' && cmd[j] != '>' && cmd[j] != '|' && !isspace(cmd[j]); ++j)
+            for(j = i; cmd[j] != '\0' && cmd[j] != '<' && cmd[j] != '>' && cmd[j] != '|' && !isspace(cmd[j]) && cmd[j] != '&'; ++j)
                 arg += cmd[j];
             process_tail->args.push_back(arg);
             i = j;
@@ -444,15 +611,15 @@ void man(char *args[])
 
 
 void set_term_color()
-{  
-    fprintf(stdout, "\033[33m");  
-    fflush(stdout);  
+{
+    fprintf(stdout, "\033[33m");
+    fflush(stdout);
 }
 
 void reset_term_color()
-{  
-    fprintf(stdout, "\033[0m");  
-    fflush(stdout);  
+{
+    fprintf(stdout, "\033[0m");
+    fflush(stdout);
 }
 
 
@@ -487,18 +654,18 @@ void launch_process(Process *p, pid_t pgid, int foreground)
     if (shell_is_interactive)
     {
         pid = getpid();
-        if(pgid == 0) 
+        if(pgid == 0)
             pgid = pid;
         setpgid(pid, pgid);
         if(foreground)
             tcsetpgrp(shell_fd, pgid);
 
-        signal (SIGINT, SIG_DFL);
-        signal (SIGQUIT, SIG_DFL);
-        signal (SIGTSTP, SIG_DFL);
-        signal (SIGTTIN, SIG_DFL);
-        signal (SIGTTOU, SIG_DFL);
-        signal (SIGCHLD, SIG_DFL);
+        signal(SIGINT, SIG_DFL);
+        signal(SIGQUIT, SIG_DFL);
+        signal(SIGTSTP, SIG_DFL);
+        signal(SIGTTIN, SIG_DFL);
+        signal(SIGTTOU, SIG_DFL);
+        signal(SIGCHLD, SIG_DFL);
     }
 
     if(p->in_fd != STDIN_FILENO)
@@ -522,12 +689,11 @@ void launch_process(Process *p, pid_t pgid, int foreground)
 
 void launch_job(Job *j, int foreground)
 {
-    Process *p;
     pid_t pid;
     int pipefd[2], infile, outfile;
 
     infile = STDIN_FILENO;
-    for (p = j->process_head; p != NULL; p = p->next)
+    for (Process *p = j->process_head; p != NULL; p = p->next)
     {
         if (p->next != NULL)
         {
@@ -563,7 +729,7 @@ void launch_job(Job *j, int foreground)
             launch_process(p, j->pgid, foreground);
         else if(pid < 0)
         {
-            cerr << "fork child process error" << endl;
+            perror("fork error");
             exit (1);
         }
         else
@@ -593,9 +759,6 @@ void launch_job(Job *j, int foreground)
         put_job_in_background(j, 0);
 }
 
-/* Put job j in the foreground.  If cont is nonzero,
-   restore the saved terminal modes and send the process group a
-   SIGCONT signal to wake it up before we block.  */
 
 void put_job_in_foreground (Job *j, int cont)
 {
@@ -618,38 +781,69 @@ void put_job_in_foreground (Job *j, int cont)
     tcsetattr (shell_fd, TCSADRAIN, &shell_tmodes);
 }
 
-/* Put a job in the background.  If the cont argument is true, send
-   the process group a SIGCONT signal to wake it up.  */
 
 void put_job_in_background (Job *j, int cont)
 {
     if (cont)
+    {
+        tcsetattr(shell_fd, TCSADRAIN, &j->tmodes);
         if (kill(- j->pgid, SIGCONT) < 0)
             perror ("kill (SIGCONT)");
+    }
+    int index = 0;
+    for(Job *job = job_head; job != NULL; job = job->next)
+    {
+        index++;
+        if(job == j)
+        {
+            printf("[%d] %d\n", index, j->pgid);
+            break;
+        }
+    }
+    tcgetattr (shell_fd, &j->tmodes);
 }
 
 int mark_process_status (pid_t pid, int status)
 {
-    Job *j;
-    Process *p;
+    int index = 1;
     if(pid > 0)
     {
-        /* Update the record for the process.  */
-        for (j = job_head; j != NULL; j = j->next)
-            for (p = j->process_head; p != NULL; p = p->next)
+        for (Job *j = job_head; j != NULL; j = j->next, index++)
+            for (Process *p = j->process_head; p != NULL; p = p->next)
                 if (p->pid == pid)
                 {
                     p->status = status;
                     if (WIFSTOPPED(status))
                     {
                         p->stopped = 1;
-                        fprintf (stderr, "%d: Stoped by signal %d.\n", (int)pid, WSTOPSIG(p->status)); 
+                        if(!j->notified)
+                        {
+                            printf("\n[%d]+ 已停止\t\t", index);
+                            cout << j->command << endl;
+                            job_next = job_cur;
+                            job_cur = j;
+                            j->foreground = 0;
+                        }
+                        j->notified = true;
+                        //fprintf (stderr, "%d: Stoped by signal %d.\n", (int)pid, WSTOPSIG(p->status));
                     }
                     else
                     {
                         p->completed = 1;
+                        if(!j->foreground)
+                        {
+                            if(!j->fgnotified)
+                            {
+                                printf("\n[%d]+ 已完成\t\t", index);
+                                cout << j->command << endl;
+                                job_cur = job_next;
+                                if(job_next != NULL)
+                                    job_next = job_next->prev;
+                            }
+                            j->fgnotified = true;
+                        }
                         if (WIFSIGNALED(status))
-                            fprintf (stderr, "%d: Terminated by signal %d.\n", (int)pid, WTERMSIG(p->status));
+                            fprintf (stderr, "\n%d: Terminated by signal %d.\n", (int)pid, WTERMSIG(p->status));
                     }
                     return 0;
                 }
@@ -674,7 +868,7 @@ void update_status (void)
     int status;
     pid_t pid;
     do
-        pid = waitpid (WAIT_ANY, &status, WUNTRACED | WNOHANG);
+        pid = waitpid(WAIT_ANY, &status, WUNTRACED | WNOHANG);
     while (!mark_process_status(pid, status));
 }
 
@@ -684,7 +878,6 @@ void wait_for_job (Job *j)
 {
     int status;
     pid_t pid;
-
     do
         pid = waitpid (WAIT_ANY, &status, WUNTRACED);
     while (!mark_process_status (pid, status)
@@ -692,14 +885,12 @@ void wait_for_job (Job *j)
             && !job_is_completed (j));
 }
 
-/* Format information about job status for the user to look at.  */
 void format_job_info (Job *j, const char *status)
 {
     fprintf(stderr, "%d (%s): %s\n", j->pgid, status, j->command.c_str());
 }
 
-/* Notify the user about stopped or terminated jobs.
-   Delete terminated jobs from the active job list.  */
+
 void do_job_notification (void)
 {
     Job *j = job_head;
@@ -710,7 +901,7 @@ void do_job_notification (void)
     {
         if (job_is_completed(j))
         {
-//            format_job_info(j, "completed");
+
             if (j == job_head)
             {
                 job_head = job_head->next;
@@ -747,7 +938,7 @@ void do_job_notification (void)
     }
 }
 
-/* Mark a stopped job J as being running again.  */
+
 void mark_job_as_running (Job *j)
 {
     for (Process *p = j->process_head; p != NULL; p = p->next)
@@ -763,4 +954,3 @@ void continue_job (Job *j, int foreground)
     else
         put_job_in_background (j, 1);
 }
-
